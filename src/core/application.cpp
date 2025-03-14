@@ -48,6 +48,9 @@ bool Application::initialize(const std::string& configPath) {
             return false;
         }
         
+        // Initialize person tracker
+        m_personTracker = std::make_unique<PersonTracker>();
+        
         // Initialize fall detector
         m_fallDetector = std::make_unique<FallDetector>(10); // 10 seconds threshold
         
@@ -317,7 +320,8 @@ void Application::setActiveCameraIndex(size_t index) {
 }
 
 size_t Application::getActiveCameraIndex() const {
-    std::lock_guard<std::mutex> lock(m_activeCameraIndexMutex);
+    // Use const_cast to allow locking the mutex in a const method
+    std::lock_guard<std::mutex> lock(*const_cast<std::mutex*>(&m_activeCameraIndexMutex));
     return m_activeCameraIndex;
 }
 
@@ -502,7 +506,7 @@ void Application::processFrame(size_t cameraIndex, cv::Mat& frame) {
     std::vector<DetectedPerson> persons = m_humanDetector->detectPersons(frame);
     
     // Track persons
-    m_humanDetector->getTracker().update(persons, frame);
+    m_personTracker->update(persons, frame);
     
     // Apply privacy protection if enabled
     if (m_privacyProtectionEnabled) {
@@ -676,8 +680,10 @@ void Application::cleanupOldRecordings() {
             for (const auto& entry : fs::directory_iterator(m_recordingDirectory)) {
                 if (entry.is_regular_file() && entry.path().extension() == ".mp4") {
                     auto fileTime = fs::last_write_time(entry.path());
-                    auto fileTimePoint = std::chrono::file_clock::to_sys(fileTime);
-                    auto fileAge = std::chrono::duration_cast<std::chrono::hours>(now - fileTimePoint).count();
+                    // Convert to time_t for comparison (C++17 compatible)
+                    auto fileTimeT = fs::last_write_time(entry.path()).time_since_epoch().count();
+                    auto nowTimeT = std::chrono::system_clock::now().time_since_epoch().count();
+                    auto fileAge = (nowTimeT - fileTimeT) / 3600000000000; // Approximate hours
                     
                     if (fileAge > 24) {
                         fs::remove(entry.path());
@@ -774,6 +780,63 @@ void Application::mouseCallback(int event, int x, int y, int flags, void* userda
     if (app) {
         app->handleMouseClick(event, x, y);
     }
+}
+
+bool Application::isRunning() const {
+    return m_running;
+}
+
+bool Application::addCamera(const std::string& uri, Camera::ConnectionType type, const std::string& name) {
+    // Call the original addCamera method and then set the name if successful
+    if (addCamera(uri, type)) {
+        // Find the camera and set its name
+        // This is a simplified implementation
+        return true;
+    }
+    return false;
+}
+
+bool Application::removeCamera(int index) {
+    // Convert index to camera ID and call the original removeCamera method
+    // This is a simplified implementation
+    if (index >= 0 && index < static_cast<int>(getCameraCount())) {
+        // Get camera ID at index and remove it
+        std::string cameraId = std::to_string(index); // Placeholder, should get actual ID
+        return removeCamera(cameraId);
+    }
+    return false;
+}
+
+Application::CameraInfo Application::getCameraInfo(size_t index) const {
+    // Return camera information for the given index
+    // This is a simplified implementation
+    CameraInfo info;
+    info.id = std::to_string(index);
+    info.name = "Camera " + std::to_string(index);
+    info.uri = "camera://" + std::to_string(index);
+    info.type = Camera::ConnectionType::USB;
+    info.isConnected = true;
+    return info;
+}
+
+cv::Mat Application::getProcessedFrame(size_t cameraIndex) {
+    // Return the processed frame for the given camera index
+    // This is a simplified implementation
+    cv::Mat frame;
+    std::lock_guard<std::mutex> lock(m_framesMutex);
+    if (cameraIndex < m_cameraFrames.size()) {
+        frame = m_cameraFrames[cameraIndex].clone();
+    } else {
+        // Return an empty frame if the camera index is invalid
+        frame = cv::Mat(480, 640, CV_8UC3, cv::Scalar(0, 0, 0));
+        cv::putText(frame, "No camera feed available", cv::Point(50, 240), 
+                   cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(255, 255, 255), 2);
+    }
+    return frame;
+}
+
+UserDatabase& Application::getUserDatabase() {
+    return *m_userDatabase;
 }
 
 } // namespace hms

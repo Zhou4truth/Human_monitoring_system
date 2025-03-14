@@ -49,93 +49,100 @@ namespace hms {
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
-
 public:
     explicit MainWindow(QWidget *parent = nullptr);
-    ~MainWindow();
-
+    ~MainWindow() override;
+    
     void initialize();
     bool isInitialized() const;
-
+    
 protected:
     void closeEvent(QCloseEvent *event) override;
-
+    
 private slots:
-    // Camera management
+    // Camera management slots
     void onAddCameraClicked();
     void onRemoveCameraClicked();
     void onCameraSelected(int index);
     
-    // User management
+    // User management slots
     void onAddUserClicked();
     void onEditUserClicked();
     void onDeleteUserClicked();
     void onUserSelected(int row, int column);
     
-    // Settings
+    // Alert management
+    void onAlertReceived(int userId, int personId);
+    void onAlertResponded(int userId, int personId, const std::string& response);
+    
+    // Settings slots
     void onFallDetectionToggled(bool checked);
     void onPrivacyProtectionToggled(bool checked);
     void onRecordingToggled(bool checked);
     void onRecordingDirClicked();
     
-    // Alerts
-    void onAlertReceived(int userId, int personId);
-    void onAlertResponded(int userId, int personId, const std::string& response);
-    
-    // UI updates
-    void updateCameraFeeds();
-    void updateUserTable();
-    void updateAlertTable();
-    
-    // Menu actions
+    // Menu action slots
     void onAboutClicked();
     void onExitClicked();
     void onSettingsClicked();
-
+    
 private:
+    Application* m_app;
+    QTimer* m_updateTimer;
+    
     // UI components
-    QWidget *m_centralWidget;
-    QTabWidget *m_tabWidget;
+    QWidget* m_centralWidget;
+    QTabWidget* m_tabWidget;
+    QLabel* m_statusLabel;
     
     // Camera tab
-    QWidget *m_cameraTab;
-    QLabel *m_mainCameraView;
-    QListWidget *m_cameraList;
-    QPushButton *m_addCameraButton;
-    QPushButton *m_removeCameraButton;
-    QCheckBox *m_fallDetectionCheckbox;
-    QCheckBox *m_privacyProtectionCheckbox;
-    QCheckBox *m_recordingCheckbox;
-    QPushButton *m_recordingDirButton;
-    QLabel *m_recordingDirLabel;
+    QWidget* m_cameraTab;
+    QComboBox* m_cameraSelector;
+    QLabel* m_cameraView;
+    QPushButton* m_addCameraBtn;
+    QPushButton* m_removeCameraBtn;
+    QCheckBox* m_fallDetectionChk;
+    QCheckBox* m_privacyProtectionChk;
+    QCheckBox* m_recordingChk;
     
-    // User management tab
-    QWidget *m_userTab;
-    QTableWidget *m_userTable;
-    QPushButton *m_addUserButton;
-    QPushButton *m_editUserButton;
-    QPushButton *m_deleteUserButton;
+    // User tab
+    QWidget* m_userTab;
+    QTableWidget* m_userTable;
+    QPushButton* m_addUserBtn;
+    QPushButton* m_editUserBtn;
+    QPushButton* m_deleteUserBtn;
     
-    // Alerts tab
-    QWidget *m_alertTab;
-    QTableWidget *m_alertTable;
-    
-    // Status bar
-    QLabel *m_statusLabel;
+    // Alert tab
+    QWidget* m_alertTab;
+    QTableWidget* m_alertTable;
     
     // Dialogs
-    QDialog *m_addCameraDialog;
-    QDialog *m_addUserDialog;
-    QDialog *m_settingsDialog;
+    QDialog* m_addCameraDialog;
+    QLineEdit* m_cameraNameEdit;
+    QLineEdit* m_cameraUrlEdit;
+    QComboBox* m_cameraTypeCombo;
     
-    // Application
-    Application *m_app;
-    QTimer *m_updateTimer;
+    QDialog* m_addUserDialog;
+    QLineEdit* m_userNameEdit;
+    QLineEdit* m_userEmailEdit;
+    QLineEdit* m_userPhoneEdit;
+    QLineEdit* m_userAddressEdit;
     
-    // Current state
+    QDialog* m_settingsDialog;
+    QLineEdit* m_recordingDirEdit;
+    QPushButton* m_recordingDirBtn;
+    QSpinBox* m_retentionDaysSpinBox;
+    
+    // State
     int m_selectedUserId;
     
     // Helper methods
+    void updateCameraView(const cv::Mat& frame);
+    void updateUserTable();
+    void updateAlertTable();
+    void updateCameraFeeds();
+    
+    // UI creation methods
     void createMenus();
     void createCameraTab();
     void createUserTab();
@@ -144,11 +151,9 @@ private:
     void createAddUserDialog();
     void createSettingsDialog();
     
-    void updateCameraView(const cv::Mat& frame);
-    void showAlert(const QString& title, const QString& message);
-    
-    // Convert between OpenCV and Qt image formats
+    // Utility methods
     QImage matToQImage(const cv::Mat& mat);
+    void showAlert(const QString& title, const QString& message);
 };
 
 } // namespace hms

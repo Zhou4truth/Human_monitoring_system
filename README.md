@@ -42,7 +42,7 @@ sudo apt install build-essential cmake git libopencv-dev libboost-all-dev libcur
 
 2. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/human_monitoring_system.git
+git clone https://github.com/Zhou4truth/human_monitoring_system.git
 cd human_monitoring_system
 ```
 

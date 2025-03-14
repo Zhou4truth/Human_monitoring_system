@@ -2,6 +2,7 @@
 #include <iostream>
 #include <sstream>
 #include <curl/curl.h>
+#include <random>
 
 namespace hms {
 

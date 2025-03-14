@@ -31,8 +31,22 @@ public:
     
     // Camera management
     bool addCamera(const std::string& uri, Camera::ConnectionType type);
+    bool addCamera(const std::string& uri, Camera::ConnectionType type, const std::string& name);
     bool removeCamera(const std::string& id);
+    bool removeCamera(int index);
     size_t getCameraCount() const;
+    
+    // Camera information
+    struct CameraInfo {
+        std::string id;
+        std::string name;
+        std::string uri;
+        Camera::ConnectionType type;
+        bool isConnected;
+    };
+    
+    CameraInfo getCameraInfo(size_t index) const;
+    cv::Mat getProcessedFrame(size_t cameraIndex);
     
     // User database management
     bool addUser(User& user);
@@ -40,10 +54,12 @@ public:
     bool deleteUser(int userId);
     User getUserById(int userId);
     std::vector<User> getAllUsers();
+    UserDatabase& getUserDatabase();
     
     // UI interaction
     void setActiveCameraIndex(size_t index);
     size_t getActiveCameraIndex() const;
+    bool isRunning() const;
     
     // Fall detection and notification
     void enableFallDetection(bool enable);
@@ -67,6 +83,7 @@ private:
     std::unique_ptr<FallDetector> m_fallDetector;
     std::unique_ptr<PrivacyProtector> m_privacyProtector;
     std::unique_ptr<NotificationManager> m_notificationManager;
+    std::unique_ptr<PersonTracker> m_personTracker;
     
     // Application state
     std::atomic<bool> m_running;

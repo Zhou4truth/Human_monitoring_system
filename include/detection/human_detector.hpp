@@ -1,223 +1,265 @@
-// Get output layers
-        std::vector<int> outLayers = m_net.getUnconnectedOutLayers();
-        std::vector<std::string> layersNames = m_net.getLayerNames();
-        m_outputLayerNames.resize(outLayers.size());
-        
-        for (size_t i = 0; i < outLayers.size(); ++i) {
-            m_outputLayerNames[i] = layersNames[outLayers[i] - 1];
+#pragma once
+
+#include <vector>
+#include <string>
+#include <iostream>
+#include <opencv2/opencv.hpp>
+#include <opencv2/dnn.hpp>
+
+namespace hms {
+
+// Structure to represent a detected person
+struct DetectedPerson {
+    int id;
+    cv::Rect boundingBox;
+    float confidence;
+    std::vector<cv::Point> keypoints;
+    cv::Mat appearance;
+    bool isFallen;
+    cv::Scalar color;
+    std::string name;
+    
+    DetectedPerson() : id(-1), confidence(0.0f), isFallen(false), color(0, 255, 0) {}
+};
+
+// Class for human detection using YOLOv8
+class HumanDetector {
+public:
+    HumanDetector(const std::string& modelPath, float confThreshold = 0.5f, 
+                 float nmsThreshold = 0.45f, int inputWidth = 640, int inputHeight = 640)
+        : m_modelPath(modelPath), m_confThreshold(confThreshold), 
+          m_nmsThreshold(nmsThreshold), m_inputWidth(inputWidth), 
+          m_inputHeight(inputHeight), m_initialized(false) {}
+    
+    ~HumanDetector() {}
+    
+    bool initialize() {
+        try {
+            // Load the network
+            m_net = cv::dnn::readNet(m_modelPath);
+            
+            // Set backend and target
+            m_net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+            m_net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+            
+            // Get output layers
+            std::vector<int> outLayers = m_net.getUnconnectedOutLayers();
+            std::vector<std::string> layersNames = m_net.getLayerNames();
+            m_outputLayerNames.resize(outLayers.size());
+            
+            for (size_t i = 0; i < outLayers.size(); ++i) {
+                m_outputLayerNames[i] = layersNames[outLayers[i] - 1];
+            }
+            
+            m_initialized = true;
+            return true;
+        } catch (const cv::Exception& e) {
+            std::cerr << "Error initializing YOLO model: " << e.what() << std::endl;
+            return false;
         }
-        
-        m_initialized = true;
-        return true;
-    } catch (const cv::Exception& e) {
-        std::cerr << "Error initializing YOLO model: " << e.what() << std::endl;
-        return false;
     }
-}
-
-void HumanDetector::preprocess(const cv::Mat& frame, cv::Mat& blob) {
-    // YOLOv8 uses 640x640 input size
-    cv::dnn::blobFromImage(frame, blob, 1/255.0, cv::Size(640, 640), cv::Scalar(), true, false);
-}
-
-std::vector<DetectedPerson> HumanDetector::detectPersons(const cv::Mat& frame) {
-    if (!m_initialized) {
-        if (!initialize()) {
+    
+    void preprocess(const cv::Mat& frame, cv::Mat& blob) {
+        // YOLOv8 uses 640x640 input size
+        cv::dnn::blobFromImage(frame, blob, 1/255.0, cv::Size(m_inputWidth, m_inputHeight), cv::Scalar(), true, false);
+    }
+    
+    std::vector<DetectedPerson> detectPersons(const cv::Mat& frame) {
+        if (!m_initialized && !initialize()) {
             return {};
         }
+        
+        cv::Mat blob;
+        preprocess(frame, blob);
+        
+        m_net.setInput(blob);
+        
+        std::vector<cv::Mat> outputs;
+        m_net.forward(outputs, m_outputLayerNames);
+        
+        return postprocess(frame, outputs);
     }
     
-    cv::Mat blob;
-    preprocess(frame, blob);
-    
-    m_net.setInput(blob);
-    
-    std::vector<cv::Mat> outputs;
-    m_net.forward(outputs, m_outputLayerNames);
-    
-    return postprocess(frame, outputs);
-}
-
-std::vector<DetectedPerson> HumanDetector::postprocess(const cv::Mat& frame, 
-                                                     const std::vector<cv::Mat>& outputs) {
-    std::vector<DetectedPerson> persons;
-    
-    // YOLOv8 output format processing
-    // Extract the output tensor containing detection results
-    const auto& output = outputs[0]; // For YOLOv8, we typically have a single output tensor
-    
-    // Process detections
-    const int numDetections = output.size[1];
-    const int numAttributes = output.size[2];
-    
-    // Get scaling factors
-    float xScale = static_cast<float>(frame.cols) / 640.0f;
-    float yScale = static_cast<float>(frame.rows) / 640.0f;
-    
-    // Process each detection
-    std::vector<int> classIds;
-    std::vector<float> confidences;
-    std::vector<cv::Rect> boxes;
-    
-    // YOLO output: [batch_id, x, y, w, h, confidence, class_scores...]
-    for (int i = 0; i < numDetections; i++) {
-        // Get the row for the current detection
-        cv::Mat detection = output.row(i);
+    std::vector<DetectedPerson> postprocess(const cv::Mat& frame, const std::vector<cv::Mat>& outputs) {
+        std::vector<DetectedPerson> persons;
         
-        // Get confidence (objectness score)
-        float confidence = detection.at<float>(4);
+        // YOLOv8 has a different output format than YOLOv5
+        // Process the detection results
+        const int personClassId = 0; // In COCO dataset, person is class 0
         
-        if (confidence > m_confThreshold) {
-            // Get class scores starting from index 5
-            cv::Mat scores = detection.colRange(5, numAttributes);
-            
-            // Find the highest class score and its index
-            cv::Point classIdPoint;
-            double maxScore;
-            minMaxLoc(scores, nullptr, &maxScore, nullptr, &classIdPoint);
-            
-            int classId = classIdPoint.x;
-            float classScore = static_cast<float>(maxScore);
-            
-            // Person class ID is 0 in COCO dataset
-            if (classId == 0) {  // Filter for person class only
-                float finalConfidence = confidence * classScore;
+        for (size_t i = 0; i < outputs.size(); ++i) {
+            float* data = (float*)outputs[i].data;
+            for (int j = 0; j < outputs[i].rows; ++j, data += outputs[i].cols) {
+                cv::Mat scores = outputs[i].row(j).colRange(5, outputs[i].cols);
+                cv::Point classIdPoint;
+                double confidence;
                 
-                if (finalConfidence > m_confThreshold) {
-                    // Get bounding box coordinates
-                    float centerX = detection.at<float>(0) * xScale;
-                    float centerY = detection.at<float>(1) * yScale;
-                    float width = detection.at<float>(2) * xScale;
-                    float height = detection.at<float>(3) * yScale;
+                // Get the value and location of the maximum score
+                cv::minMaxLoc(scores, 0, &confidence, 0, &classIdPoint);
+                int classId = classIdPoint.x;
+                
+                if (classId == personClassId && confidence > m_confThreshold) {
+                    DetectedPerson person;
+                    person.confidence = static_cast<float>(confidence);
                     
-                    int left = static_cast<int>(centerX - width / 2);
-                    int top = static_cast<int>(centerY - height / 2);
+                    // Center, width, height
+                    float cx = data[0];
+                    float cy = data[1];
+                    float w = data[2];
+                    float h = data[3];
                     
-                    classIds.push_back(classId);
-                    confidences.push_back(finalConfidence);
-                    boxes.push_back(cv::Rect(left, top, static_cast<int>(width), static_cast<int>(height)));
+                    // Calculate top-left corner
+                    int left = static_cast<int>((cx - w/2) * frame.cols);
+                    int top = static_cast<int>((cy - h/2) * frame.rows);
+                    
+                    person.boundingBox = cv::Rect(left, top, 
+                                                 static_cast<int>(w * frame.cols), 
+                                                 static_cast<int>(h * frame.rows));
+                    
+                    // Ensure the bounding box is within the frame
+                    person.boundingBox &= cv::Rect(0, 0, frame.cols, frame.rows);
+                    
+                    // Extract appearance feature for tracking
+                    if (person.boundingBox.width > 0 && person.boundingBox.height > 0) {
+                        person.appearance = frame(person.boundingBox).clone();
+                        persons.push_back(person);
+                    }
                 }
             }
         }
-    }
-    
-    // Apply non-maximum suppression
-    std::vector<int> indices;
-    cv::dnn::NMSBoxes(boxes, confidences, m_confThreshold, m_nmsThreshold, indices);
-    
-    // Create DetectedPerson objects
-    for (size_t i = 0; i < indices.size(); ++i) {
-        int idx = indices[i];
         
-        DetectedPerson person;
-        person.boundingBox = boxes[idx];
-        person.confidence = confidences[idx];
-        person.id = -1;  // Will be assigned by tracker
-        person.isFallen = false;  // Will be determined by fall detector
-        person.color = cv::Scalar(0, 0, 255);  // Default color (will be assigned by tracker)
+        // Apply non-maximum suppression
+        std::vector<int> indices;
+        std::vector<cv::Rect> boxes;
+        std::vector<float> scores;
         
-        // For now, set empty pose. This will be filled by a separate pose estimator
-        person.pose = std::vector<cv::Point>();
-        
-        persons.push_back(person);
-    }
-    
-    return persons;
-}
-
-// PersonTracker implementation
-PersonTracker::PersonTracker() : m_nextId(0) {
-}
-
-PersonTracker::~PersonTracker() {
-}
-
-void PersonTracker::update(std::vector<DetectedPerson>& detections, const cv::Mat& frame) {
-    if (m_trackedPersons.empty()) {
-        // First frame, assign IDs to all detections
-        for (auto& detection : detections) {
-            detection.id = m_nextId++;
-            detection.color = generateUniqueColor(detection.id);
-            m_trackedPersons.push_back(detection);
+        for (const auto& person : persons) {
+            boxes.push_back(person.boundingBox);
+            scores.push_back(person.confidence);
         }
-    } else {
-        // Create a copy of currently tracked persons
-        std::vector<DetectedPerson> previousTracked = m_trackedPersons;
-        m_trackedPersons.clear();
         
-        // For each detection, find the best match in previous tracks
-        for (auto& detection : detections) {
-            int matchId = matchDetection(detection.boundingBox, previousTracked);
-            
-            if (matchId >= 0) {
-                // Update existing track
-                detection.id = previousTracked[matchId].id;
-                detection.color = previousTracked[matchId].color;
-                detection.name = previousTracked[matchId].name;
-                
-                // Remove the matched track from previous
-                previousTracked.erase(previousTracked.begin() + matchId);
-            } else {
-                // New track
+        cv::dnn::NMSBoxes(boxes, scores, m_confThreshold, m_nmsThreshold, indices);
+        
+        std::vector<DetectedPerson> filteredPersons;
+        for (size_t i = 0; i < indices.size(); ++i) {
+            filteredPersons.push_back(persons[indices[i]]);
+        }
+        
+        return filteredPersons;
+    }
+    
+private:
+    std::string m_modelPath;
+    float m_confThreshold;
+    float m_nmsThreshold;
+    int m_inputWidth;
+    int m_inputHeight;
+    bool m_initialized;
+    cv::dnn::Net m_net;
+    std::vector<std::string> m_outputLayerNames;
+};
+
+// Class for tracking detected persons across frames
+class PersonTracker {
+public:
+    PersonTracker() : m_nextId(0) {}
+    
+    ~PersonTracker() {}
+    
+    void update(std::vector<DetectedPerson>& detections, const cv::Mat& frame) {
+        if (m_trackedPersons.empty()) {
+            // First frame, assign IDs to all detections
+            for (auto& detection : detections) {
                 detection.id = m_nextId++;
-                detection.color = generateUniqueColor(detection.id);
+                m_trackedPersons.push_back(detection);
             }
+            return;
+        }
+        
+        // Match detections with existing tracks
+        std::vector<int> assignedTracks(m_trackedPersons.size(), -1);
+        std::vector<bool> assignedDetections(detections.size(), false);
+        
+        // For each detection, find the best matching track
+        for (size_t i = 0; i < detections.size(); ++i) {
+            int bestTrackIdx = matchDetection(detections[i].boundingBox, m_trackedPersons);
             
-            m_trackedPersons.push_back(detection);
+            if (bestTrackIdx >= 0) {
+                assignedTracks[bestTrackIdx] = i;
+                assignedDetections[i] = true;
+                
+                // Update the track with new detection
+                detections[i].id = m_trackedPersons[bestTrackIdx].id;
+            }
         }
-    }
-}
-
-int PersonTracker::matchDetection(const cv::Rect& detection, 
-                                 const std::vector<DetectedPerson>& existingTracks) {
-    // Find the best match based on IoU (Intersection over Union)
-    float bestIoU = 0.3f;  // Minimum IoU threshold
-    int bestIdx = -1;
-    
-    for (size_t i = 0; i < existingTracks.size(); ++i) {
-        const cv::Rect& trackBox = existingTracks[i].boundingBox;
         
-        // Calculate intersection
-        cv::Rect intersection = detection & trackBox;
-        float intersectionArea = intersection.width * intersection.height;
+        // Update tracked persons list
+        std::vector<DetectedPerson> newTracks;
         
-        // Calculate union
-        float detectionArea = detection.width * detection.height;
-        float trackArea = trackBox.width * trackBox.height;
-        float unionArea = detectionArea + trackArea - intersectionArea;
-        
-        // Calculate IoU
-        float iou = intersectionArea / unionArea;
-        
-        if (iou > bestIoU) {
-            bestIoU = iou;
-            bestIdx = static_cast<int>(i);
+        // Add matched tracks
+        for (size_t i = 0; i < m_trackedPersons.size(); ++i) {
+            if (assignedTracks[i] >= 0) {
+                newTracks.push_back(detections[assignedTracks[i]]);
+            }
         }
+        
+        // Add new tracks for unmatched detections
+        for (size_t i = 0; i < detections.size(); ++i) {
+            if (!assignedDetections[i]) {
+                detections[i].id = m_nextId++;
+                newTracks.push_back(detections[i]);
+            }
+        }
+        
+        m_trackedPersons = newTracks;
     }
     
-    return bestIdx;
-}
-
-cv::Scalar PersonTracker::generateUniqueColor(int id) {
-    // Generate a visually distinct color for each person
-    static std::vector<cv::Scalar> colorPalette = {
-        cv::Scalar(255, 0, 0),    // Blue
-        cv::Scalar(0, 255, 0),    // Green
-        cv::Scalar(0, 0, 255),    // Red
-        cv::Scalar(255, 255, 0),  // Cyan
-        cv::Scalar(255, 0, 255),  // Magenta
-        cv::Scalar(0, 255, 255),  // Yellow
-        cv::Scalar(255, 128, 0),  // Light Blue
-        cv::Scalar(128, 255, 0),  // Light Green
-        cv::Scalar(128, 0, 255),  // Light Red
-        cv::Scalar(255, 0, 128)   // Purple
-    };
+    int matchDetection(const cv::Rect& detection, const std::vector<DetectedPerson>& existingTracks) {
+        double maxIoU = 0.3; // Minimum IoU threshold for a match
+        int bestMatch = -1;
+        
+        for (size_t i = 0; i < existingTracks.size(); ++i) {
+            double iou = calculateIoU(detection, existingTracks[i].boundingBox);
+            
+            if (iou > maxIoU) {
+                maxIoU = iou;
+                bestMatch = i;
+            }
+        }
+        
+        return bestMatch;
+    }
     
-    return colorPalette[id % colorPalette.size()];
-}
-
-const std::vector<DetectedPerson>& PersonTracker::getTrackedPersons() const {
-    return m_trackedPersons;
-}
+    double calculateIoU(const cv::Rect& box1, const cv::Rect& box2) {
+        int x1 = std::max(box1.x, box2.x);
+        int y1 = std::max(box1.y, box2.y);
+        int x2 = std::min(box1.x + box1.width, box2.x + box2.width);
+        int y2 = std::min(box1.y + box1.height, box2.y + box2.height);
+        
+        if (x2 < x1 || y2 < y1) {
+            return 0.0;
+        }
+        
+        double intersectionArea = (x2 - x1) * (y2 - y1);
+        double box1Area = box1.width * box1.height;
+        double box2Area = box2.width * box2.height;
+        
+        return intersectionArea / (box1Area + box2Area - intersectionArea);
+    }
+    
+    cv::Scalar generateUniqueColor(int id) {
+        // Generate a unique color based on ID
+        int hue = (id * 30) % 180;
+        return cv::Scalar(hue, 255, 255); // HSV color
+    }
+    
+    const std::vector<DetectedPerson>& getTrackedPersons() const {
+        return m_trackedPersons;
+    }
+    
+private:
+    std::vector<DetectedPerson> m_trackedPersons;
+    int m_nextId;
+};
 
 } // namespace hms

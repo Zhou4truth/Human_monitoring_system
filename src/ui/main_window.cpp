@@ -9,6 +9,7 @@
 #include <QSettings>
 #include <QDesktopServices>
 #include <QUrl>
+#include <QApplication>
 
 namespace hms {
 
@@ -64,34 +65,42 @@ MainWindow::~MainWindow()
 
 void MainWindow::initialize()
 {
-    try {
+    if (!m_app) {
         m_app = new Application();
-        if (!m_app->initialize("config.json")) {
-            QMessageBox::critical(this, "Error", "Failed to initialize application");
+        
+        // Connect signals
+        connect(m_updateTimer, &QTimer::timeout, this, &MainWindow::updateCameraFeeds);
+        
+        // Initialize application
+        bool initialized = m_app->initialize("config.json");
+        if (!initialized) {
+            showAlert("Error", "Failed to initialize application. Check logs for details.");
             return;
         }
         
         // Update UI with current settings
-        m_fallDetectionCheckbox->setChecked(m_app->isFallDetectionEnabled());
-        m_privacyProtectionCheckbox->setChecked(m_app->isPrivacyProtectionEnabled());
-        m_recordingCheckbox->setChecked(m_app->isRecordingEnabled());
-        m_recordingDirLabel->setText(QString::fromStdString(m_app->getRecordingDirectory()));
+        m_fallDetectionChk->setChecked(m_app->isFallDetectionEnabled());
+        m_privacyProtectionChk->setChecked(m_app->isPrivacyProtectionEnabled());
+        m_recordingChk->setChecked(m_app->isRecordingEnabled());
+        m_recordingDirEdit->setText(QString::fromStdString(m_app->getRecordingDirectory()));
         
-        // Update camera list
-        for (size_t i = 0; i < m_app->getCameraCount(); ++i) {
-            const auto& camera = m_app->getCameraInfo(i);
-            m_cameraList->addItem(QString::fromStdString(camera.name));
+        // Populate camera list
+        size_t cameraCount = m_app->getCameraCount();
+        if (cameraCount > 0) {
+            m_cameraSelector->clear();
+            for (size_t i = 0; i < cameraCount; i++) {
+                auto cameraInfo = m_app->getCameraInfo(i);
+                m_cameraSelector->addItem(QString::fromStdString(cameraInfo.name));
+            }
         }
         
-        // Update user table
+        // Populate user table
         updateUserTable();
         
-        // Start application
-        m_app->run();
+        // Start update timer
+        m_updateTimer->start(100); // 10 fps
         
         m_statusLabel->setText("Application initialized successfully");
-    } catch (const std::exception& e) {
-        QMessageBox::critical(this, "Error", QString("Failed to initialize application: %1").arg(e.what()));
     }
 }
 
@@ -121,68 +130,58 @@ void MainWindow::closeEvent(QCloseEvent *event)
 void MainWindow::onAddCameraClicked()
 {
     if (m_addCameraDialog->exec() == QDialog::Accepted) {
-        QLineEdit *uriEdit = m_addCameraDialog->findChild<QLineEdit*>("uriEdit");
-        QComboBox *typeCombo = m_addCameraDialog->findChild<QComboBox*>("typeCombo");
-        QLineEdit *nameEdit = m_addCameraDialog->findChild<QLineEdit*>("nameEdit");
+        QString name = m_cameraNameEdit->text();
+        QString url = m_cameraUrlEdit->text();
+        QString typeStr = m_cameraTypeCombo->currentText();
         
-        if (!uriEdit || !typeCombo || !nameEdit) {
-            QMessageBox::warning(this, "Error", "Dialog components not found");
+        if (name.isEmpty() || url.isEmpty()) {
+            showAlert("Error", "Camera name and URL cannot be empty");
             return;
         }
         
-        std::string uri = uriEdit->text().toStdString();
-        std::string name = nameEdit->text().toStdString();
-        
-        if (uri.empty()) {
-            QMessageBox::warning(this, "Error", "Camera URI cannot be empty");
-            return;
-        }
-        
+        // Convert string type to Camera::ConnectionType
         Camera::ConnectionType type;
-        switch (typeCombo->currentIndex()) {
-            case 0: type = Camera::ConnectionType::USB; break;
-            case 1: type = Camera::ConnectionType::RTSP; break;
-            case 2: type = Camera::ConnectionType::HTTP; break;
-            case 3: type = Camera::ConnectionType::MJPEG; break;
-            default: type = Camera::ConnectionType::RTSP;
+        if (typeStr == "USB") {
+            type = Camera::ConnectionType::USB;
+        } else if (typeStr == "RTSP") {
+            type = Camera::ConnectionType::RTSP;
+        } else if (typeStr == "HTTP") {
+            type = Camera::ConnectionType::HTTP;
+        } else if (typeStr == "MJPEG") {
+            type = Camera::ConnectionType::MJPEG;
+        } else {
+            type = Camera::ConnectionType::RTSP; // Default
         }
         
-        if (m_app && m_app->addCamera(uri, type, name)) {
-            m_cameraList->addItem(QString::fromStdString(name));
-            m_statusLabel->setText("Camera added successfully");
+        if (m_app->addCamera(url.toStdString(), type, name.toStdString())) {
+            m_cameraSelector->addItem(name);
+            m_statusLabel->setText(QString("Added camera: %1").arg(name));
         } else {
-            QMessageBox::warning(this, "Error", "Failed to add camera");
+            showAlert("Error", "Failed to add camera");
         }
     }
 }
 
 void MainWindow::onRemoveCameraClicked()
 {
-    int index = m_cameraList->currentRow();
+    int index = m_cameraSelector->currentIndex();
     if (index >= 0) {
-        QMessageBox::StandardButton reply = QMessageBox::question(
-            this, "Remove Camera", "Are you sure you want to remove this camera?",
-            QMessageBox::Yes | QMessageBox::No
-        );
-        
-        if (reply == QMessageBox::Yes && m_app) {
-            if (m_app->removeCamera(index)) {
-                m_cameraList->takeItem(index);
-                m_statusLabel->setText("Camera removed successfully");
-            } else {
-                QMessageBox::warning(this, "Error", "Failed to remove camera");
-            }
+        QString name = m_cameraSelector->itemText(index);
+        if (m_app->removeCamera(index)) {
+            m_cameraSelector->removeItem(index);
+            m_statusLabel->setText(QString("Removed camera: %1").arg(name));
+        } else {
+            showAlert("Error", "Failed to remove camera");
         }
     } else {
-        QMessageBox::information(this, "Information", "Please select a camera to remove");
+        showAlert("Error", "No camera selected");
     }
 }
 
 void MainWindow::onCameraSelected(int index)
 {
-    if (index >= 0 && m_app) {
-        // Update the main camera view with the selected camera
-        m_statusLabel->setText(QString("Selected camera: %1").arg(m_cameraList->item(index)->text()));
+    if (index >= 0) {
+        m_statusLabel->setText(QString("Selected camera: %1").arg(m_cameraSelector->itemText(index)));
     }
 }
 
@@ -214,12 +213,9 @@ void MainWindow::onAddUserClicked()
         
         User user;
         user.name = name;
-        user.age = age;
-        user.address = address;
-        user.phoneNumber = phone;
-        user.email = email;
+        user.notes = address + "\nPhone: " + phone + "\nEmail: " + email;
         
-        if (m_app && m_app->getUserDatabase().addUser(user)) {
+        if (m_app && m_app->addUser(user)) {
             updateUserTable();
             m_statusLabel->setText("User added successfully");
         } else {
@@ -237,7 +233,7 @@ void MainWindow::onEditUserClicked()
     
     if (!m_app) return;
     
-    User user = m_app->getUserDatabase().getUserById(m_selectedUserId);
+    User user = m_app->getUserById(m_selectedUserId);
     if (user.id < 0) {
         QMessageBox::warning(this, "Error", "Failed to retrieve user information");
         return;
@@ -255,20 +251,31 @@ void MainWindow::onEditUserClicked()
         return;
     }
     
+    // Parse notes field to extract address, phone, and email
+    std::string notes = user.notes;
+    std::string address, phone, email;
+    
+    // Simple parsing of notes field - in a real app, you'd want more robust parsing
+    size_t phonePos = notes.find("Phone: ");
+    size_t emailPos = notes.find("Email: ");
+    
+    if (phonePos != std::string::npos && emailPos != std::string::npos) {
+        address = notes.substr(0, phonePos);
+        phone = notes.substr(phonePos + 7, emailPos - phonePos - 7);
+        email = notes.substr(emailPos + 7);
+    }
+    
     nameEdit->setText(QString::fromStdString(user.name));
-    ageEdit->setText(QString::number(user.age));
-    addressEdit->setText(QString::fromStdString(user.address));
-    phoneEdit->setText(QString::fromStdString(user.phoneNumber));
-    emailEdit->setText(QString::fromStdString(user.email));
+    ageEdit->setText("65"); // Default age since we don't store it anymore
+    addressEdit->setText(QString::fromStdString(address));
+    phoneEdit->setText(QString::fromStdString(phone));
+    emailEdit->setText(QString::fromStdString(email));
     
     if (m_addUserDialog->exec() == QDialog::Accepted) {
         user.name = nameEdit->text().toStdString();
-        user.age = ageEdit->text().toInt();
-        user.address = addressEdit->text().toStdString();
-        user.phoneNumber = phoneEdit->text().toStdString();
-        user.email = emailEdit->text().toStdString();
+        user.notes = addressEdit->text().toStdString() + "\nPhone: " + phoneEdit->text().toStdString() + "\nEmail: " + emailEdit->text().toStdString();
         
-        if (m_app->getUserDatabase().updateUser(user)) {
+        if (m_app->updateUser(user)) {
             updateUserTable();
             m_statusLabel->setText("User updated successfully");
         } else {
@@ -290,7 +297,7 @@ void MainWindow::onDeleteUserClicked()
     );
     
     if (reply == QMessageBox::Yes && m_app) {
-        if (m_app->getUserDatabase().deleteUser(m_selectedUserId)) {
+        if (m_app->deleteUser(m_selectedUserId)) {
             updateUserTable();
             m_selectedUserId = -1;
             m_statusLabel->setText("User deleted successfully");
@@ -317,7 +324,7 @@ void MainWindow::onAlertReceived(int userId, int personId)
     if (!m_app) return;
     
     // Get user information
-    User user = m_app->getUserDatabase().getUserById(userId);
+    User user = m_app->getUserById(userId);
     if (user.id < 0) {
         QMessageBox::warning(this, "Error", "Failed to retrieve user information for alert");
         return;
@@ -348,7 +355,7 @@ void MainWindow::onAlertResponded(int userId, int personId, const std::string& r
     if (!m_app) return;
     
     // Get user information
-    User user = m_app->getUserDatabase().getUserById(userId);
+    User user = m_app->getUserById(userId);
     if (user.id < 0) {
         return;
     }
@@ -387,7 +394,7 @@ void MainWindow::updateAlertTable()
         int row = m_alertTable->rowCount();
         m_alertTable->insertRow(row);
         
-        User user = m_app->getUserDatabase().getUserById(alert.userId);
+        User user = m_app->getUserById(alert.userId);
         
         QTableWidgetItem *idItem = new QTableWidgetItem(QString::number(alert.id));
         QTableWidgetItem *userItem = new QTableWidgetItem(QString::fromStdString(user.name));
@@ -408,7 +415,7 @@ void MainWindow::updateCameraFeeds()
 {
     if (!m_app) return;
     
-    int selectedCamera = m_cameraList->currentRow();
+    int selectedCamera = m_cameraSelector->currentIndex();
     if (selectedCamera >= 0 && selectedCamera < static_cast<int>(m_app->getCameraCount())) {
         cv::Mat frame = m_app->getProcessedFrame(selectedCamera);
         if (!frame.empty()) {
@@ -446,13 +453,13 @@ void MainWindow::onRecordingDirClicked()
 {
     QString dir = QFileDialog::getExistingDirectory(
         this, "Select Recording Directory",
-        QString::fromStdString(m_app ? m_app->getRecordingDirectory() : ""),
+        m_recordingDirEdit->text(),
         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks
     );
     
     if (!dir.isEmpty() && m_app) {
+        m_recordingDirEdit->setText(dir);
         m_app->setRecordingDirectory(dir.toStdString());
-        m_recordingDirLabel->setText(dir);
         m_statusLabel->setText("Recording directory updated");
     }
 }
@@ -463,29 +470,26 @@ void MainWindow::updateUserTable()
     
     m_userTable->clear();
     m_userTable->setRowCount(0);
-    m_userTable->setColumnCount(5);
+    m_userTable->setColumnCount(4);
     
     m_userTable->setHorizontalHeaderItem(0, new QTableWidgetItem("ID"));
     m_userTable->setHorizontalHeaderItem(1, new QTableWidgetItem("Name"));
-    m_userTable->setHorizontalHeaderItem(2, new QTableWidgetItem("Age"));
-    m_userTable->setHorizontalHeaderItem(3, new QTableWidgetItem("Address"));
-    m_userTable->setHorizontalHeaderItem(4, new QTableWidgetItem("Phone Number"));
+    m_userTable->setHorizontalHeaderItem(2, new QTableWidgetItem("Email"));
+    m_userTable->setHorizontalHeaderItem(3, new QTableWidgetItem("Phone Number"));
     
-    for (const auto& user : m_app->getUserDatabase().getUsers()) {
+    for (const auto& user : m_app->getAllUsers()) {
         int row = m_userTable->rowCount();
         m_userTable->insertRow(row);
         
         QTableWidgetItem *idItem = new QTableWidgetItem(QString::number(user.id));
         QTableWidgetItem *nameItem = new QTableWidgetItem(QString::fromStdString(user.name));
-        QTableWidgetItem *ageItem = new QTableWidgetItem(QString::number(user.age));
-        QTableWidgetItem *addressItem = new QTableWidgetItem(QString::fromStdString(user.address));
-        QTableWidgetItem *phoneItem = new QTableWidgetItem(QString::fromStdString(user.phoneNumber));
+        QTableWidgetItem *emailItem = new QTableWidgetItem(QString::fromStdString(user.notes.substr(user.notes.find("Email: ") + 7)));
+        QTableWidgetItem *phoneItem = new QTableWidgetItem(QString::fromStdString(user.notes.substr(user.notes.find("Phone: ") + 7, user.notes.find("\nEmail: ") - user.notes.find("Phone: ") - 7)));
         
         m_userTable->setItem(row, 0, idItem);
         m_userTable->setItem(row, 1, nameItem);
-        m_userTable->setItem(row, 2, ageItem);
-        m_userTable->setItem(row, 3, addressItem);
-        m_userTable->setItem(row, 4, phoneItem);
+        m_userTable->setItem(row, 2, emailItem);
+        m_userTable->setItem(row, 3, phoneItem);
     }
 }
 
@@ -526,52 +530,49 @@ void MainWindow::createCameraTab()
     m_tabWidget->addTab(m_cameraTab, "Camera Feeds");
     
     // Main camera view
-    m_mainCameraView = new QLabel();
-    m_mainCameraView->setMinimumSize(640, 480);
-    m_mainCameraView->setAlignment(Qt::AlignCenter);
-    m_mainCameraView->setText("No camera selected");
-    m_mainCameraView->setStyleSheet("border: 1px solid #ccc;");
+    m_cameraView = new QLabel("No camera selected");
+    m_cameraView->setStyleSheet("border: 1px solid #ccc;");
     
     // Camera list
-    m_cameraList = new QListWidget();
-    connect(m_cameraList, &QListWidget::currentRowChanged, this, &MainWindow::onCameraSelected);
+    m_cameraSelector = new QComboBox();
+    connect(m_cameraSelector, &QComboBox::currentIndexChanged, this, &MainWindow::onCameraSelected);
     
     // Camera controls
-    m_addCameraButton = new QPushButton("Add Camera");
-    connect(m_addCameraButton, &QPushButton::clicked, this, &MainWindow::onAddCameraClicked);
+    m_addCameraBtn = new QPushButton("Add Camera");
+    connect(m_addCameraBtn, &QPushButton::clicked, this, &MainWindow::onAddCameraClicked);
     
-    m_removeCameraButton = new QPushButton("Remove Camera");
-    connect(m_removeCameraButton, &QPushButton::clicked, this, &MainWindow::onRemoveCameraClicked);
+    m_removeCameraBtn = new QPushButton("Remove Camera");
+    connect(m_removeCameraBtn, &QPushButton::clicked, this, &MainWindow::onRemoveCameraClicked);
     
     QVBoxLayout *cameraControlsLayout = new QVBoxLayout();
-    cameraControlsLayout->addWidget(m_cameraList);
-    cameraControlsLayout->addWidget(m_addCameraButton);
-    cameraControlsLayout->addWidget(m_removeCameraButton);
+    cameraControlsLayout->addWidget(m_cameraSelector);
+    cameraControlsLayout->addWidget(m_addCameraBtn);
+    cameraControlsLayout->addWidget(m_removeCameraBtn);
     
     // Settings
     QGroupBox *settingsGroup = new QGroupBox("Settings");
     
-    m_fallDetectionCheckbox = new QCheckBox("Enable Fall Detection");
-    connect(m_fallDetectionCheckbox, &QCheckBox::toggled, this, &MainWindow::onFallDetectionToggled);
+    m_fallDetectionChk = new QCheckBox("Enable Fall Detection");
+    connect(m_fallDetectionChk, &QCheckBox::toggled, this, &MainWindow::onFallDetectionToggled);
     
-    m_privacyProtectionCheckbox = new QCheckBox("Enable Privacy Protection");
-    connect(m_privacyProtectionCheckbox, &QCheckBox::toggled, this, &MainWindow::onPrivacyProtectionToggled);
+    m_privacyProtectionChk = new QCheckBox("Enable Privacy Protection");
+    connect(m_privacyProtectionChk, &QCheckBox::toggled, this, &MainWindow::onPrivacyProtectionToggled);
     
-    m_recordingCheckbox = new QCheckBox("Enable Recording");
-    connect(m_recordingCheckbox, &QCheckBox::toggled, this, &MainWindow::onRecordingToggled);
+    m_recordingChk = new QCheckBox("Enable Recording");
+    connect(m_recordingChk, &QCheckBox::toggled, this, &MainWindow::onRecordingToggled);
     
-    m_recordingDirButton = new QPushButton("Recording Directory");
-    connect(m_recordingDirButton, &QPushButton::clicked, this, &MainWindow::onRecordingDirClicked);
+    m_recordingDirBtn = new QPushButton("Recording Directory");
+    connect(m_recordingDirBtn, &QPushButton::clicked, this, &MainWindow::onRecordingDirClicked);
     
-    m_recordingDirLabel = new QLabel("recordings");
-    m_recordingDirLabel->setWordWrap(true);
+    m_recordingDirEdit = new QLineEdit("recordings");
+    m_recordingDirEdit->setReadOnly(true);
     
     QVBoxLayout *settingsLayout = new QVBoxLayout();
-    settingsLayout->addWidget(m_fallDetectionCheckbox);
-    settingsLayout->addWidget(m_privacyProtectionCheckbox);
-    settingsLayout->addWidget(m_recordingCheckbox);
-    settingsLayout->addWidget(m_recordingDirButton);
-    settingsLayout->addWidget(m_recordingDirLabel);
+    settingsLayout->addWidget(m_fallDetectionChk);
+    settingsLayout->addWidget(m_privacyProtectionChk);
+    settingsLayout->addWidget(m_recordingChk);
+    settingsLayout->addWidget(m_recordingDirBtn);
+    settingsLayout->addWidget(m_recordingDirEdit);
     settingsGroup->setLayout(settingsLayout);
     
     // Layout
@@ -581,7 +582,7 @@ void MainWindow::createCameraTab()
     rightLayout->addStretch();
     
     QHBoxLayout *mainLayout = new QHBoxLayout(m_cameraTab);
-    mainLayout->addWidget(m_mainCameraView, 3);
+    mainLayout->addWidget(m_cameraView, 3);
     mainLayout->addLayout(rightLayout, 1);
     m_cameraTab->setLayout(mainLayout);
 }
@@ -592,26 +593,27 @@ void MainWindow::createUserTab()
     m_tabWidget->addTab(m_userTab, "User Management");
     
     // User table
-    m_userTable = new QTableWidget();
+    m_userTable = new QTableWidget(0, 4);
+    m_userTable->setHorizontalHeaderLabels({"ID", "Name", "Email", "Phone"});
     m_userTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_userTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_userTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     connect(m_userTable, &QTableWidget::cellClicked, this, &MainWindow::onUserSelected);
     
     // User controls
-    m_addUserButton = new QPushButton("Add User");
-    connect(m_addUserButton, &QPushButton::clicked, this, &MainWindow::onAddUserClicked);
+    m_addUserBtn = new QPushButton("Add User");
+    connect(m_addUserBtn, &QPushButton::clicked, this, &MainWindow::onAddUserClicked);
     
-    m_editUserButton = new QPushButton("Edit User");
-    connect(m_editUserButton, &QPushButton::clicked, this, &MainWindow::onEditUserClicked);
+    m_editUserBtn = new QPushButton("Edit User");
+    connect(m_editUserBtn, &QPushButton::clicked, this, &MainWindow::onEditUserClicked);
     
-    m_deleteUserButton = new QPushButton("Delete User");
-    connect(m_deleteUserButton, &QPushButton::clicked, this, &MainWindow::onDeleteUserClicked);
+    m_deleteUserBtn = new QPushButton("Delete User");
+    connect(m_deleteUserBtn, &QPushButton::clicked, this, &MainWindow::onDeleteUserClicked);
     
     QHBoxLayout *userControlsLayout = new QHBoxLayout();
-    userControlsLayout->addWidget(m_addUserButton);
-    userControlsLayout->addWidget(m_editUserButton);
-    userControlsLayout->addWidget(m_deleteUserButton);
+    userControlsLayout->addWidget(m_addUserBtn);
+    userControlsLayout->addWidget(m_editUserBtn);
+    userControlsLayout->addWidget(m_deleteUserBtn);
     userControlsLayout->addStretch();
     
     QVBoxLayout *mainLayout = new QVBoxLayout(m_userTab);
@@ -642,29 +644,26 @@ void MainWindow::createAddCameraDialog()
     m_addCameraDialog->setWindowTitle("Add Camera");
     m_addCameraDialog->setModal(true);
     
-    QLineEdit *uriEdit = new QLineEdit();
-    uriEdit->setObjectName("uriEdit");
-    uriEdit->setPlaceholderText("Camera URI (e.g., 0 for webcam, rtsp:// for IP camera)");
+    m_cameraNameEdit = new QLineEdit();
+    m_cameraNameEdit->setPlaceholderText("Camera Name (e.g., Living Room)");
     
-    QComboBox *typeCombo = new QComboBox();
-    typeCombo->setObjectName("typeCombo");
-    typeCombo->addItem("USB");
-    typeCombo->addItem("RTSP");
-    typeCombo->addItem("HTTP");
-    typeCombo->addItem("MJPEG");
+    m_cameraUrlEdit = new QLineEdit();
+    m_cameraUrlEdit->setPlaceholderText("Camera URI (e.g., 0 for webcam, rtsp:// for IP camera)");
     
-    QLineEdit *nameEdit = new QLineEdit();
-    nameEdit->setObjectName("nameEdit");
-    nameEdit->setPlaceholderText("Camera Name (e.g., Living Room)");
+    m_cameraTypeCombo = new QComboBox();
+    m_cameraTypeCombo->addItem("USB");
+    m_cameraTypeCombo->addItem("RTSP");
+    m_cameraTypeCombo->addItem("HTTP");
+    m_cameraTypeCombo->addItem("MJPEG");
     
     QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     connect(buttonBox, &QDialogButtonBox::accepted, m_addCameraDialog, &QDialog::accept);
     connect(buttonBox, &QDialogButtonBox::rejected, m_addCameraDialog, &QDialog::reject);
     
     QFormLayout *formLayout = new QFormLayout();
-    formLayout->addRow("Camera URI:", uriEdit);
-    formLayout->addRow("Camera Type:", typeCombo);
-    formLayout->addRow("Camera Name:", nameEdit);
+    formLayout->addRow("Camera Name:", m_cameraNameEdit);
+    formLayout->addRow("Camera URI:", m_cameraUrlEdit);
+    formLayout->addRow("Camera Type:", m_cameraTypeCombo);
     
     QVBoxLayout *mainLayout = new QVBoxLayout();
     mainLayout->addLayout(formLayout);
@@ -791,8 +790,10 @@ void MainWindow::updateCameraView(const cv::Mat& frame)
     if (frame.empty()) return;
     
     QImage image = matToQImage(frame);
-    m_mainCameraView->setPixmap(QPixmap::fromImage(image).scaled(
-        m_mainCameraView->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    m_cameraView->setPixmap(QPixmap::fromImage(image).scaled(
+        m_cameraView->width(), m_cameraView->height(),
+        Qt::KeepAspectRatio, Qt::SmoothTransformation
+    ));
 }
 
 QImage MainWindow::matToQImage(const cv::Mat& mat)
