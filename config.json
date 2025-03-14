@@ -1,0 +1,78 @@
+{
+    "application": {
+        "name": "Human Monitoring System",
+        "version": "1.0.0",
+        "log_level": "info",
+        "log_file": "logs/hms.log",
+        "database_path": "data/hms.db"
+    },
+    "camera": {
+        "default_fps": 30,
+        "default_resolution": {
+            "width": 640,
+            "height": 480
+        },
+        "cameras": [
+            {
+                "name": "Default Camera",
+                "uri": "0",
+                "type": "USB",
+                "enabled": true
+            }
+        ]
+    },
+    "detection": {
+        "human_detection": {
+            "model_path": "models/yolov8n.onnx",
+            "confidence_threshold": 0.5,
+            "nms_threshold": 0.45,
+            "input_width": 640,
+            "input_height": 640
+        },
+        "fall_detection": {
+            "enabled": true,
+            "fall_threshold": 0.7,
+            "consecutive_frames": 3,
+            "cooldown_period": 60
+        },
+        "privacy_protection": {
+            "enabled": true,
+            "nudity_detection_threshold": 0.6,
+            "blur_strength": 25
+        }
+    },
+    "recording": {
+        "enabled": true,
+        "directory": "recordings",
+        "format": "mp4",
+        "codec": "avc1",
+        "retention_days": 7,
+        "max_storage_gb": 50,
+        "segment_duration_minutes": 10
+    },
+    "notification": {
+        "sms": {
+            "enabled": true,
+            "provider": "twilio",
+            "account_sid": "YOUR_TWILIO_ACCOUNT_SID",
+            "auth_token": "YOUR_TWILIO_AUTH_TOKEN",
+            "from_number": "YOUR_TWILIO_PHONE_NUMBER"
+        },
+        "email": {
+            "enabled": true,
+            "smtp_server": "smtp.gmail.com",
+            "smtp_port": 587,
+            "username": "your_email@gmail.com",
+            "password": "your_app_password",
+            "from_email": "your_email@gmail.com",
+            "use_ssl": true
+        }
+    },
+    "ui": {
+        "theme": "dark",
+        "language": "en",
+        "auto_start": true,
+        "minimize_to_tray": true,
+        "show_notifications": true
+    }
+}
